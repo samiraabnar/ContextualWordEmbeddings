@@ -46,7 +46,9 @@ class LSTMLanguageModel(object):
         input_seq_lengths = tf.reshape(input_shape_batch, [self.hparams.batch_size])
         output_seq_lengths = tf.reshape(output_shape_batch, [self.hparams.batch_size])
 
-        self.y = dens_output_seq_batch
+        max_output_length = tf.reduce_max(output_seq_lengths)
+
+        self.y = tf.stack([dens_output_seq_batch[i] for i in range(self.hparams.batch_size)])
 
 
         self.embedding = tf.get_variable("embedding", [self.vocab_size, self.hparams.number_of_hidden_units],
@@ -78,9 +80,26 @@ class LSTMLanguageModel(object):
 
 
 
-        cross_ent = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.projected_seq_predictions, labels=self.y)
-        tf.logging.info(cross_ent)
-        self.train_loss = (tf.reduce_sum(cross_ent) /
+        #cross_ent = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.projected_seq_predictions, labels=self.y)
+        #tf.logging.info(cross_ent)
+        
+        tf.logging.info(self.sequence_predictions[:,-1])
+        
+        predictions = tf.concat(tf.unstack(self.sequence_predictions),axis=0)
+        tf.logging.info(predictions)
+        y = tf.concat(tf.unstack(self.y),axis=0)
+        nce_loss = tf.nn.nce_loss(tf.transpose(self.projection), 
+                                  tf.zeros(self.vocab_size,dtype=tf.float32), 
+                                  inputs= predictions,#self.sequence_predictions[0], 
+                                  labels=tf.expand_dims(y,1),#self.y[0],1),
+                                  num_sampled=20, 
+                                  num_classes=10000, 
+                                  num_true=1, 
+                                  sampled_values=None, 
+                                  remove_accidental_hits=False, partition_strategy='div', name='nce_loss')# for y,sp in zip(tf.unstack(self.y),tf.unstack(self.sequence_predictions))]
+        
+        
+        self.train_loss = (tf.reduce_sum(nce_loss) /
                            self.hparams.batch_size)
         tf.logging.info(self.train_loss)
         tf.summary.scalar("loss", tf.reduce_mean(self.train_loss))
@@ -206,16 +225,16 @@ class LSTMLanguageModel(object):
 
 if __name__ == '__main__':
     hparams = tf.flags
-    hparams.DEFINE_integer("training_size", 1000, "total number of training samples")
+    hparams.DEFINE_integer("training_size", 100000, "total number of training samples")
     hparams.DEFINE_integer("number_of_epochs", 100, "Epoch to train [25]")
     hparams.DEFINE_integer("vocab_size", 10000, "The size of vocabulary [10000]")
     hparams.DEFINE_integer("batch_size", 32, "The size of batch images [32]")
     hparams.DEFINE_integer("depth", 2, "Depth [1]")
     hparams.DEFINE_integer("max_nsteps", 1000, "Max number of steps [1000]")
-    hparams.DEFINE_integer("number_of_hidden_units", 128, "The size of hidden layers")
-    hparams.DEFINE_float("learning_rate", 1e-6, "Learning rate [0.00005]")
+    hparams.DEFINE_integer("number_of_hidden_units", 512, "The size of hidden layers")
+    hparams.DEFINE_float("learning_rate", 5e-5, "Learning rate [0.00005]")
     hparams.DEFINE_float("momentum", 0.9, "Momentum of RMSProp [0.9]")
-    hparams.DEFINE_float("keep_prob", 1., "keep_prob [0.5]")
+    hparams.DEFINE_float("keep_prob", 0.7, "keep_prob [0.5]")
     hparams.DEFINE_float("decay", 0.95, "Decay of RMSProp [0.95]")
     hparams.DEFINE_string("dtype", "float32", "dtype [float32]")
     hparams.DEFINE_string("model", "LSTM", "The type of model to train and test [LSTM, BiLSTM, Attentive, Impatient]")
