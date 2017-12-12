@@ -75,7 +75,7 @@ class LSTMLanguageModel(object):
             tf.logging.info(sp)
 
         self.projection = tf.get_variable("output_projection", [self.hparams.number_of_hidden_units, self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
-        self.projection_bias = tf.get_variable("output_projection_bias", [self.hparams.number_of_hidden_units, self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
+        self.projection_bias = tf.get_variable("output_projection_bias", [self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
         self.projected_seq_predictions = [tf.matmul(sp,self.projection) for sp in tf.unstack(self.sequence_predictions)]
 
 
