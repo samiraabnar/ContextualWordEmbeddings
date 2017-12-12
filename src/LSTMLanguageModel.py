@@ -74,7 +74,8 @@ class LSTMLanguageModel(object):
         for sp in tf.unstack(self.sequence_predictions):
             tf.logging.info(sp)
 
-        self.projection = tf.get_variable("output_projection", [self.hparams.number_of_hidden_units, self.vocab_size],dtype=tf.float32)
+        self.projection = tf.get_variable("output_projection", [self.hparams.number_of_hidden_units, self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
+        self.projection_bias = tf.get_variable("output_projection_bias", [self.hparams.number_of_hidden_units, self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
         self.projected_seq_predictions = [tf.matmul(sp,self.projection) for sp in tf.unstack(self.sequence_predictions)]
 
 
@@ -88,8 +89,8 @@ class LSTMLanguageModel(object):
         predictions = tf.concat(tf.unstack(self.sequence_predictions),axis=0)
         tf.logging.info(predictions)
         y = tf.concat(tf.unstack(self.y),axis=0)
-        nce_loss = tf.nn.nce_loss(tf.transpose(self.projection), 
-                                  tf.zeros(self.vocab_size,dtype=tf.float32), 
+        nce_loss = tf.nn.nce_loss(weights=tf.transpose(self.projection),
+                                  biases=self.projection_bias,
                                   inputs= predictions,#self.sequence_predictions[0], 
                                   labels=tf.expand_dims(y,1),#self.y[0],1),
                                   num_sampled=20, 
