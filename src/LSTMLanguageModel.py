@@ -6,8 +6,9 @@ from PTBReader import *
 
 
 class LSTMLanguageModel(object):
-    def __init__(self, sess, hparams, mode):
-        self.sess = sess
+    def __init__(self,hparams, mode):
+        #self.sess = sess
+        #self.summary_writer = summary_writer
         self.hparams = hparams
 
         print(self.hparams)
@@ -16,6 +17,8 @@ class LSTMLanguageModel(object):
         self.vocab_size = self.hparams.vocab_size
 
         self.reader = PTBReader(data_dir="../data",dataset_name="ptb", vocab_size=10000)
+        self.initializer = tf.contrib.layers.xavier_initializer()
+        self.orthogonal_initializer = tf.orthogonal_initializer()
 
     def define_graph(self):
         filenames = ["../data/ptb_train_0.tfrecords"]
@@ -51,22 +54,24 @@ class LSTMLanguageModel(object):
         self.y = tf.stack([dens_output_seq_batch[i] for i in range(self.hparams.batch_size)])
 
 
-        self.embedding = tf.get_variable("embedding", [self.vocab_size, self.hparams.number_of_hidden_units],
-                                         dtype=tf.float32)
-        embedded_inputs = [tf.nn.embedding_lookup(self.embedding, dense_input_seq_batch[i]) for i in range(self.hparams.batch_size)]
-        if self.mode == tf.contrib.learn.ModeKeys.TRAIN:
-            embedded_inputs = tf.nn.dropout(embedded_inputs, self.hparams.keep_prob)
+        with tf.variable_scope("input_layer") as current_scope:
+            self.embedding = tf.get_variable("embedding", [self.vocab_size, self.hparams.number_of_hidden_units],
+                                             dtype=tf.float32,initializer=self.orthogonal_initializer)
+            embedded_inputs = [tf.nn.embedding_lookup(self.embedding, dense_input_seq_batch[i]) for i in range(self.hparams.batch_size)]
+            if self.mode == tf.contrib.learn.ModeKeys.TRAIN:
+                embedded_inputs = tf.nn.dropout(embedded_inputs, self.hparams.keep_prob)
 
-        self.cell, _ = self._get_lstm_cell()
-        tf.logging.info(dense_input_seq_batch)
-        tf.logging.info(input_seq_lengths)
-        all_states, current_state = tf.nn.dynamic_rnn(inputs=embedded_inputs,
-                                                      cell=self.cell,
-                                                      sequence_length=input_seq_lengths,
-                                                      initial_state=None,
-                                                      time_major=False,
-                                                      scope=None,
-                                                      dtype=tf.float32)
+        with tf.variable_scope("hidden_layer"):
+            self.cell, _ = self._get_lstm_cell()
+            tf.logging.info(dense_input_seq_batch)
+            tf.logging.info(input_seq_lengths)
+            all_states, current_state = tf.nn.dynamic_rnn(inputs=embedded_inputs,
+                                                          cell=self.cell,
+                                                          sequence_length=input_seq_lengths,
+                                                          initial_state=None,
+                                                          time_major=False,
+                                                          scope=None,
+                                                          dtype=tf.float32)
 
         tf.logging.info(all_states)
         self.sequence_predictions = all_states
@@ -74,9 +79,10 @@ class LSTMLanguageModel(object):
         for sp in tf.unstack(self.sequence_predictions):
             tf.logging.info(sp)
 
-        self.projection = tf.get_variable("output_projection", [self.hparams.number_of_hidden_units, self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
-        self.projection_bias = tf.get_variable("output_projection_bias", [self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
-        self.projected_seq_predictions = [tf.matmul(sp,self.projection) for sp in tf.unstack(self.sequence_predictions)]
+        with tf.variable_scope("output_projection"):
+            self.projection = tf.get_variable(name="output_projection", shape=[self.hparams.number_of_hidden_units, self.vocab_size],dtype=tf.float32, initializer=self.orthogonal_initializer)
+            self.projection_bias = tf.get_variable(name="output_projection_bias", shape=[self.vocab_size],dtype=tf.float32, initializer=tf.zeros_initializer())
+            self.projected_seq_predictions = [tf.add(tf.matmul(sp,self.projection),self.projection_bias) for sp in tf.unstack(self.sequence_predictions)]
 
 
 
@@ -89,25 +95,32 @@ class LSTMLanguageModel(object):
         predictions = tf.concat(tf.unstack(self.sequence_predictions),axis=0)
         tf.logging.info(predictions)
         y = tf.concat(tf.unstack(self.y),axis=0)
-        nce_loss = tf.nn.nce_loss(weights=tf.transpose(self.projection),
-                                  biases=self.projection_bias,
-                                  inputs= predictions,#self.sequence_predictions[0], 
-                                  labels=tf.expand_dims(y,1),#self.y[0],1),
-                                  num_sampled=20, 
-                                  num_classes=10000, 
-                                  num_true=1, 
-                                  sampled_values=None, 
-                                  remove_accidental_hits=False, partition_strategy='div', name='nce_loss')# for y,sp in zip(tf.unstack(self.y),tf.unstack(self.sequence_predictions))]
-        
-        
-        self.train_loss = (tf.reduce_sum(nce_loss) /
-                           self.hparams.batch_size)
-        tf.logging.info(self.train_loss)
-        tf.summary.scalar("loss", tf.reduce_mean(self.train_loss))
+        with tf.variable_scope("loss"):
+            nce_loss = tf.nn.nce_loss(weights=tf.transpose(self.projection),
+                                      biases=self.projection_bias,
+                                      inputs= predictions,#self.sequence_predictions[0],
+                                      labels=tf.expand_dims(y,1),#self.y[0],1),
+                                      num_sampled=20,
+                                      num_classes=10000,
+                                      num_true=1,
+                                      sampled_values=None,
+                                      remove_accidental_hits=False, partition_strategy='div', name='nce_loss')# for y,sp in zip(tf.unstack(self.y),tf.unstack(self.sequence_predictions))]
 
-        correct_prediction = tf.equal(self.y, tf.argmax(self.projected_seq_predictions, 2))
-        self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
-        tf.summary.scalar("accuracy", self.accuracy)
+
+            self.train_loss = (tf.reduce_sum(nce_loss) /
+                               tf.cast(tf.reduce_sum(tf.stack(input_seq_lengths)),dtype='float32'))
+            tf.logging.info(self.train_loss)
+            tf.summary.scalar("nce_loss", tf.reduce_mean(self.train_loss))
+            self.cross_ent_loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(
+                                                                        labels=tf.expand_dims(y,1),
+                                                                        logits=self.projected_seq_predictions,
+                                                                        name="cross_ent_loss"))
+            tf.summary.scalar("cross_ent_loss", tf.reduce_mean(self.cross_ent_loss))
+            self.perplexity = tf.exp(self.cross_ent_loss)
+            tf.summary.scalar("perplexity", tf.reduce_mean(self.perplexity))
+            correct_prediction = tf.equal(self.y, tf.argmax(self.projected_seq_predictions, 2))
+            self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+            tf.summary.scalar("accuracy", self.accuracy)
 
 
 
@@ -168,7 +181,7 @@ class LSTMLanguageModel(object):
                         staircase=True),
                     name="learning_rate")
                 self.optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
-                tf.summary.scalar("lr", self.learning_rate)
+                tf.summary.scalar("learning_rate", self.learning_rate)
             elif self.hparams.optimizer == "adam":
                 assert float(
                     self.hparams.learning_rate
@@ -190,17 +203,18 @@ class LSTMLanguageModel(object):
                 #self.update = self.optimizer.minimize(self.train_loss,global_step=self.global_step)
                 self.update = self.optimizer.apply_gradients(zip(clipped_gradients, params), global_step=self.global_step)
 
+        self.graph_summery = tf.summary.merge_all()
 
-    def train(self, init=True):
-        # merged = tf.summary.merge_all()
-        # writer = tf.summary.FileWriter("../tmp/bidi", self.sess.graph)
+
+    def train(self, sess,summary_writer, init=True):
+
 
         start_time = time.time()
-        if init:
-            init_g = tf.global_variables_initializer()
-            init_l = tf.local_variables_initializer()
-            self.sess.run(init_g)
-            self.sess.run(init_l)
+        #if init:
+        #    init_g = tf.global_variables_initializer()
+        #    init_l = tf.local_variables_initializer()
+        #    sess.run(init_g)
+        #    sess.run(init_l)
         # Start populating the filename queue.
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord)
@@ -208,9 +222,10 @@ class LSTMLanguageModel(object):
         for epoch in range(self.hparams.number_of_epochs):
             iteration = 0
             while iteration * self.hparams.batch_size < self.hparams.training_size:
-                _, train_cost, train_accuracy = self.sess.run(
-                    [self.update, self.train_loss, self.accuracy])
+                _, train_cost, train_accuracy , graph_summery, global_step= sess.run(
+                    [self.update, self.train_loss, self.accuracy, self.graph_summery,self.global_step])
 
+                summary_writer.add_summary(graph_summery,global_step)
                 iteration += 1
                 if iteration % 10 == 0:
                     print("iterations: [%2d] time: %4.4f, loss: %.8f, accuracy: %.8f" \
@@ -221,46 +236,6 @@ class LSTMLanguageModel(object):
 
         coord.request_stop()
         coord.join(threads)
-
-
-
-if __name__ == '__main__':
-    hparams = tf.flags
-    hparams.DEFINE_integer("training_size", 100000, "total number of training samples")
-    hparams.DEFINE_integer("number_of_epochs", 100, "Epoch to train [25]")
-    hparams.DEFINE_integer("vocab_size", 10000, "The size of vocabulary [10000]")
-    hparams.DEFINE_integer("batch_size", 1, "The size of batch images [32]")
-    hparams.DEFINE_integer("depth", 2, "Depth [1]")
-    hparams.DEFINE_integer("max_nsteps", 1000, "Max number of steps [1000]")
-    hparams.DEFINE_integer("number_of_hidden_units", 512, "The size of hidden layers")
-    hparams.DEFINE_float("learning_rate", 5e-5, "Learning rate [0.00005]")
-    hparams.DEFINE_float("momentum", 0.9, "Momentum of RMSProp [0.9]")
-    hparams.DEFINE_float("keep_prob", 0.7, "keep_prob [0.5]")
-    hparams.DEFINE_float("decay", 0.95, "Decay of RMSProp [0.95]")
-    hparams.DEFINE_string("dtype", "float32", "dtype [float32]")
-    hparams.DEFINE_string("model", "LSTM", "The type of model to train and test [LSTM, BiLSTM, Attentive, Impatient]")
-    hparams.DEFINE_string("data_dir", "../data", "The name of data directory [data]")
-    hparams.DEFINE_string("dataset_name", "ptb", "The name of dataset [cnn, dailymail]")
-    hparams.DEFINE_string("checkpoint_dir", "checkpoint", "Directory name to save the checkpoints [checkpoint]")
-    hparams.DEFINE_integer("learning_rate_warmup_steps", 0, "How many steps we inverse-decay learning.")
-    hparams.DEFINE_float("learning_rate_warmup_factor", 1.0, "The inverse decay factor for each warmup step.")
-    hparams.DEFINE_integer("start_decay_step", 10, "When we start to decay")
-    hparams.DEFINE_integer("decay_steps", 10000, "How frequent we decay")
-    hparams.DEFINE_float("decay_factor", 0.98, "How much we decay.")
-    hparams.DEFINE_string("optimizer", "adam", "sgd | adam")
-    hparams.DEFINE_bool("colocate_gradients_with_ops", True,
-                        "Whether try colocating gradients with "
-                        "corresponding op")
-    hparams.DEFINE_float("--max_gradient_norm", 5.0, "Clip gradients to this norm.")
-    hparams = hparams.FLAGS
-
-    tf.logging.set_verbosity(tf.logging.INFO)
-    with tf.Session() as sess:
-        lstm_lm = LSTMLanguageModel(sess=sess, hparams=hparams, mode=tf.contrib.learn.ModeKeys.TRAIN)
-
-        lstm_lm.define_graph()
-        lstm_lm._define_train()
-        lstm_lm.train()
 
 
 
